@@ -14,7 +14,7 @@ def ph_sgc_web_scraper(page_url):
     page = requests.get(page_url)
 
     # get text from page using parser html
-    soup = BeautifulSoup(page.text, 'html')
+    soup = BeautifulSoup(page.text, 'html.parser')
  
     # check if there's are more than one table
     # if table > 1 ask to check which table to scrape
@@ -48,3 +48,6 @@ def ph_sgc_web_scraper(page_url):
         ## keep check on the curr index of the dataframe
         length = len(ph_mun_inc_class)
         ph_mun_inc_class.loc[length] = cln_row_data
+
+        # return the dataframe
+    return ph_mun_inc_class
