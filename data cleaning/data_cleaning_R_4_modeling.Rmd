@@ -1,0 +1,394 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# DATA CLEANING
+
+## pacakges
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(readxl)
+```
+
+## Importing Data
+```{r}
+path_2_base_df <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/base_inc_data.csv"
+
+base_df <- read.csv(file = path_2_base_df, header = TRUE)
+
+head(base_df)
+```
+
+```{r}
+path_2_combined_df <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/combined_input_data.csv"
+
+combined_df <- read.csv(file = path_2_combined_df, header = T)
+
+head(combined_df)
+```
+
+
+## Renaming the columns
+From here on we work with the "base_inc_data". We rename it to "municipality_cyclone_df"
+```{r}
+# renaming the columns
+municipality_tc_df <- base_df %>%
+  rename(
+    rain_total = HAZ_rainfall_Total,
+    rain_max6h = HAZ_rainfall_max_6h,
+    rain_max24h = HAZ_rainfall_max_24h,
+    wind_max = HAZ_v_max,
+    track_min_dist = HAZ_dis_track_min,
+    ls_risk_pct = GEN_landslide_per,
+    ss_risk_pct = GEN_stormsurge_per,
+    blue_ss_frac = GEN_Bu_p_inSSA,
+    blue_ls_frac = GEN_Bu_p_LS,
+    red_ls_frac = GEN_Red_per_LSbldg,
+    orange_ls_frac = GEN_Or_per_LSblg,
+    yellow_ss_frac = GEN_Yel_per_LSSAb,
+    red_ss_frac = GEN_RED_per_SSAbldg,
+    orange_ss_frac = GEN_OR_per_SSAbldg,
+    yellow_ss_frac2 = GEN_Yellow_per_LSbl,
+    slope_mean = TOP_mean_slope,
+    elev_mean = TOP_mean_elevation_m,
+    ruggedness_sd = TOP_ruggedness_stdev,
+    ruggedness_mean = TOP_mean_ruggedness,
+    slope_sd = TOP_slope_stdev,
+    has_coast = GEN_with_coast,
+    coast_length = GEN_coast_length,
+    poverty_pct = VUL_poverty_perc,
+    housing_units = VUL_Housing_Units,
+    roof_strong_wall_strong = VUL_StrongRoof_StrongWall,
+    roof_strong_wall_light = VUL_StrongRoof_LightWall,
+    roof_strong_wall_salv = VUL_StrongRoof_SalvageWall,
+    roof_light_wall_strong = VUL_LightRoof_StrongWall,
+    roof_light_wall_light = VUL_LightRoof_LightWall,
+    roof_light_wall_salv = VUL_LightRoof_SalvageWall,
+    roof_salv_wall_strong = VUL_SalvagedRoof_StrongWall,
+    roof_salv_wall_light = VUL_SalvagedRoof_LightWall,
+    roof_salv_wall_salv = VUL_SalvagedRoof_SalvageWall,
+    vulnerable_groups = VUL_vulnerable_groups,
+    pantawid_benef = VUL_pantawid_pamilya_beneficiary
+  )
+```
+
+
+```{r}
+head(municipality_tc_df)
+```
+
+## Adding more variables
+
+## Removing NA's
+We care about NA's in the outcome variable. So we remove rows with NA's in the 
+outcome varaible first.
+```{r}
+# removing NA's rows in DAM_perc_dmg
+municipality_tc_df <- municipality_tc_df  %>% 
+  filter(!is.na(DAM_perc_dmg))
+```
+
+
+```{r}
+nrow(municipality_tc_df)
+```
+
+```{r}
+head(municipality_tc_df)
+```
+
+### Missing municipality names
+```{r}
+# checking which correspondence code are missing
+missing_mun_names <- municipality_tc_df %>% 
+  filter(is.na(Correspondence.Code)) %>%
+  select(Mun_Code, Mun_Code_2)
+
+nrow(missing_mun_names)
+```
+
+```{r}
+length(unique(missing_mun_names$Mun_Code))
+```
+
+Add the missing municipality names:
+```{r warning=FALSE}
+# From Philippines Standard Geographic Code (psgc) file
+path_2_psgc <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/PSGC-2Q-2024-Publication-Datafile-rev.xlsx"
+
+col_types = c("numeric", "text", "text", "text", "text", "text", "text", "text", "text", "numeric",
+              "text")
+psgc_2q_2024 <- read_excel(path = path_2_psgc, sheet = "PSGC", col_types = col_types) 
+
+head(psgc_2q_2024)
+```
+
+```{r}
+# Codes of the missing municipalities
+missing_mun <- unique((missing_mun_names$Mun_Code_2))
+
+# convert to character and append 0 if the length is less than 9
+cor_missing_mun <- ifelse(nchar(as.character(missing_mun)) < 9,
+                 paste0("0", as.character(missing_mun)),  # Append zero
+                 as.character(missing_mun))              # Otherwise, keep as is
+
+cor_missing_mun                     
+```
+
+```{r}
+missing_mun_names <- psgc_2q_2024 %>% 
+  filter(`Correspondence Code` %in% cor_missing_mun) %>% # match character
+  select(`Correspondence Code`, Name)
+
+missing_mun_names
+```
+
+```{r}
+# adding the mun names to the dataframe
+
+clnd_municipality_tc_df <- municipality_tc_df %>% 
+  mutate(Municipality = case_when(
+    Mun_Code_2 %in% as.integer(missing_mun_names$`Correspondence Code`) ~ 
+      missing_mun_names$Name[match(Mun_Code_2, as.integer(missing_mun_names$`Correspondence Code`))],
+    TRUE ~ Municipality
+  ))
+
+
+```
+
+```{r}
+# checking again which municipality names are missing:
+any((is.na(clnd_municipality_tc_df$Municipality)))
+```
+
+```{r}
+is.null(clnd_municipality_tc_df$Municipality)
+```
+
+# Drop duplicate columns:
+```{r}
+clnd_municipality_tc_df <- clnd_municipality_tc_df %>%
+  select(-c("X10.Digit.Code","Unnamed..0", "Correspondence.Code"))
+```
+
+# Add Regions:
+Regional data (corresponding code and names) are obtained from the statistics office website: https://psa.gov.ph/classification/psgc. Using the **way-back machine** for a snapshot of the year *19th June 2020*. Particularly the file named *PSGC Publication March2020.xlsx*. The file is small so we enter the data manually.
+
+Island groups we get from Wikipedia: https://en.wikipedia.org/wiki/Island_groups_of_the_Philippines
+
+WE DO NOT HAVE THE NIR REGION IN THE DATASET
+
+```{r}
+# creating a dataframe with regions:
+region <- c('National Capital Region', 'Cordillera Administrative Region', 
+               'Ilocos Region', 'Cagayan Valley', 'Central Luzon',
+               'CALABARZON', 'MIMAROPA Region',
+              'Bicol Region', 'Western Visayas',
+              'Central Visayas', 
+               'Eastern Visayas', 'Zamboanga Peninsula',
+              'Northern Mindanao', 'Davao Region', 
+               'SOCCSKSARGEN', 'Caraga', 
+               'ARMM')
+
+region_code <- c('1300000000', '1400000000', '0100000000', '0200000000', '0300000000', '0400000000', 
+             '1700000000', '0500000000', '0600000000', '0700000000',
+            '0800000000', '0900000000', '1000000000', '1100000000', '1200000000',
+            '1600000000', '1500000000')
+
+
+island_groups <- c("Luzon", "Luzon", "Luzon", "Luzon", "Luzon", "Luzon", "Luzon", "Luzon",
+                   "Visayas", "Visayas", "Visayas", "Mindanao", "Mindanao", "Mindanao",
+                   "Mindanao", "Mindanao", "Mindanao"
+                   )
+
+regions_df <- as.data.frame(cbind(region_code, region, island_groups))
+
+head(regions_df)
+```
+
+```{r}
+# create mun_code 3 which is character and correct length
+clnd_municipality_tc_df$Mun_Code_3 <- ifelse(nchar(as.character(clnd_municipality_tc_df$Mun_Code_2)) < 9,
+                 paste0("0", as.character(clnd_municipality_tc_df$Mun_Code_2)),  # Append zero
+                 as.character(clnd_municipality_tc_df$Mun_Code_2))              # Otherwise, keep as is
+```
+
+
+```{r}
+# merge regions_df with cln_municipality_tc_df
+
+clnd_municipality_tc_df <- clnd_municipality_tc_df %>%
+  # Extract the first two characters of D
+  mutate(Key = substr(Mun_Code_3, 1, 2)) %>%
+  # Perform a left join with B
+  left_join(
+    regions_df %>%
+      mutate(Key = substr(region_code, 1, 2)) %>% 
+      select(Key, region, island_groups), # Keep only the relevant columns from B
+    by = "Key"
+  ) #%>%
+  # Rename F to E (if desired)
+  # rename(E = F) %>%
+  # Drop the intermediate Key column
+  #select(-Key)
+
+head(clnd_municipality_tc_df)
+```
+
+```{r}
+# any missing?
+any(is.na(clnd_municipality_tc_df$region))
+```
+
+
+```{r}
+# add island groups
+# merge regions_df with cln_municipality_tc_df
+
+clnd_municipality_tc_df <- clnd_municipality_tc_df %>%
+  # Extract the first two characters of D
+  #mutate(Key = substr(Mun_Code_3, 1, 2)) %>%
+  # Perform a left join with B
+  left_join(
+    regions_df %>%
+      mutate(Key = substr(region_code, 1, 2)) %>% 
+      select(Key, region), # Keep only the relevant columns from B
+    by = "Key"
+  ) #%>%
+  # Rename F to E (if desired)
+  # rename(E = F) %>%
+  # Drop the intermediate Key column
+  #select(-Key)
+
+head(clnd_municipality_tc_df)
+```
+
+
+```{r}
+# Add the three regions
+```
+
+
+# Export data
+```{r}
+# path to write cleaned data 
+path_2_write <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data"
+write.csv(clnd_municipality_tc_df, file = paste(path_2_write, "mun_model_data.csv", sep = "/"))
+```
+
+
+
+# Data documentation
+```{r}
+# Create metadata as a list
+metadata <- list(
+  rain_total = list(type = "numeric", 
+                    description = "Total rainfall (mm)", 
+                    constraints = ">= 0"),
+  rain_max6h = list(type = "numeric",
+                    description = "Maximum rainfall within a 6h period (mm)", 
+                    constraints = ">= 0"),
+  rain_max24h = list(type = "numeric",
+                    description = "Maximum rainfall within a 24h period (mm)", 
+                    constraints = ">= 0"),
+  wind_max = list(type = "numeric", 
+                  description = "Max 1 min sustained wind speed, based on wind field (ms−1)", 
+                  constraints = ">= 0"),
+  track_min_dist = list(type = "numeric", 
+                  description = "Minimum distance between typhoon track and  municipality", 
+                  constraints = ">= 0"),
+  ls_risk_pct = list(type = "numeric", 
+                  description = "Percentage of houses (OSM footprint) in landslide risk zones", 
+                  constraints = ">= 0"),
+  ss_risk_pct = list(type = "numeric", 
+                  description = "Percentage of houses (OSM footprint) in storm surge risk zones", 
+                  constraints = ">= 0"),
+  blue_ss_frac = list(type = "numeric", 
+                  description = "Fraction of municipality colored blue in storm surge risk map", 
+                  constraints = ">= 0"),
+  blue_ls_frac = list(type = "numeric", 
+                  description = "Fraction of municipality colored blue in landslide risk map", 
+                  constraints = ">= 0"),
+  red_ls_frac = list(type = "numeric", 
+                  description = "Fraction of municipality colored red in landslide risk map", 
+                  constraints = ">= 0"),
+  orange_ls_frac = list(type = "numeric", 
+                  description = "Fraction of municipality colored orange in landslide risk map", 
+                  constraints = ">= 0"),
+  yellow_ss_frac = list(type = "numeric", 
+                  description = "Fraction of municipality colored yellow in storm surge risk map", 
+                  constraints = ">= 0"),
+  red_ss_frac = list(type = "numeric", 
+                  description = "Fraction of municipality colored red in storm surge risk map", 
+                  constraints = ">= 0"),
+  orange_ss_frac = list(type = "numeric", 
+                  description = "Fraction of municipality colored orange in storm surge risk map", 
+                  constraints = ">= 0"),
+  yellow_ss_frac2 = list(type = "numeric", 
+                  description = "Fraction of municipality colored yellow in storm surge risk map", 
+                  constraints = ">= 0"),
+  slope_mean = list(type = "numeric", 
+                  description = "Slope mean", 
+                  constraints = ">= 0"),
+  elev_mean = list(type = "numeric", 
+                   description = "Elevation mean", 
+                   constraints = ">= 0"),
+  ruggedness_sd = list(type = "numeric", 
+                       description = "Ruggedness standard deviation", 
+                       constraints = "0-100"),
+  ruggedness_mean = list(type = "integer", 
+                         description = "Ruggedness mean", 
+                         constraints = ">= 0"),
+  slope_sd = list(type = "integer", 
+                         description = "Slope standard deviation", 
+                         constraints = ">= 0"),
+  poverty_pct = list(type = "integer", 
+                         description = "Percentage of people in poverty", 
+                         constraints = ">= 0"),
+  has_coast = list(type = "categorical", 
+                         description = "Boolean: coast or no coast", 
+                         constraints = ">= 0"),
+  coast_length = list(type = "integer", 
+                         description = "Length of coast", 
+                         constraints = ">= 0"),
+  housing_units = list(type = "integer", 
+                         description = "Total number of housing units", 
+                         constraints = ">= 0"),
+  roof_strong_wall_strong = list(type = "integer", 
+                         description = "Number of houses with a strong roof and strong walls", 
+                         constraints = ">= 0"),
+  roof_strong_wall_light = list(type = "integer", 
+                         description = "Number of houses with a strong roof and light walls", 
+                         constraints = ">= 0"),
+  roof_strong_wall_salv = list(type = "integer", 
+                         description = "Number of houses with a strong roof and salvaged walls", 
+                         constraints = ">= 0"),
+  roof_light_wall_strong = list(type = "integer", 
+                         description = "Number of houses with a light roof and strong walls", 
+                         constraints = ">= 0"),
+  roof_light_wall_light = list(type = "integer", 
+                         description = "Number of houses with a light roof and light walls", 
+                         constraints = ">= 0"),
+  roof_light_wall_salv = list(type = "integer", 
+                         description = "Number of houses with a light roof and salvaged walls", 
+                         constraints = ">= 0"),
+  roof_salv_wall_strong = list(type = "integer", 
+                         description = "Number of houses with a salvaged roof and strong walls", 
+                         constraints = ">= 0"),
+  roof_salv_wall_light = list(type = "integer", 
+                         description = "Number of houses with a salvaged roof and light walls", 
+                         constraints = ">= 0"),
+  roof_salv_wall_salv = list(type = "integer", 
+                         description = "Number of houses with a salvaged roof and salvaged walls", 
+                         constraints = ">= 0"),
+  vulnerable_groups = list(type = "integer", 
+                         description = "Vulnerable groups from DSWD National Household Targeting Office", 
+                         constraints = ">= 0"),
+  pantawid_benef = list(type = "integer", 
+                         description = "Number of Pantawid Pamilya beneficiary households", 
+                         constraints = ">= 0")
+)
+```
+
+# 
