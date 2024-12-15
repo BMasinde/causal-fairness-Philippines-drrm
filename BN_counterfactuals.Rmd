@@ -1,0 +1,620 @@
+---
+title: "Bayesian Network Model & Counterfactuals"
+output: html_notebook
+---
+
+```{r}
+# libraries
+library(bnlearn) # bayesian networks library
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(sf) # for shape files
+```
+
+# Functions
+```{r}
+# function to filter by typhoon
+
+filter_by_tc <- function(tc_name, data = base_df) {
+  
+  filtered_data <-  data %>% 
+    rename(
+    rain_total = HAZ_rainfall_Total,
+    rain_max6h = HAZ_rainfall_max_6h,
+    rain_max24h = HAZ_rainfall_max_24h,
+    wind_max = HAZ_v_max,
+    track_min_dist = HAZ_dis_track_min,
+    ls_risk_pct = GEN_landslide_per,
+    ss_risk_pct = GEN_stormsurge_per,
+    blue_ss_frac = GEN_Bu_p_inSSA,
+    blue_ls_frac = GEN_Bu_p_LS,
+    red_ls_frac = GEN_Red_per_LSbldg,
+    orange_ls_frac = GEN_Or_per_LSblg,
+    yellow_ss_frac = GEN_Yel_per_LSSAb,
+    red_ss_frac = GEN_RED_per_SSAbldg,
+    orange_ss_frac = GEN_OR_per_SSAbldg,
+    yellow_ls_frac = GEN_Yellow_per_LSbl,
+    slope_mean = TOP_mean_slope,
+    elev_mean = TOP_mean_elevation_m,
+    ruggedness_sd = TOP_ruggedness_stdev,
+    ruggedness_mean = TOP_mean_ruggedness,
+    slope_sd = TOP_slope_stdev,
+    has_coast = GEN_with_coast,
+    coast_length = GEN_coast_length,
+    poverty_pct = VUL_poverty_perc,
+    housing_units = VUL_Housing_Units,
+    roof_strong_wall_strong = VUL_StrongRoof_StrongWall,
+    roof_strong_wall_light = VUL_StrongRoof_LightWall,
+    roof_strong_wall_salv = VUL_StrongRoof_SalvageWall,
+    roof_light_wall_strong = VUL_LightRoof_StrongWall,
+    roof_light_wall_light = VUL_LightRoof_LightWall,
+    roof_light_wall_salv = VUL_LightRoof_SalvageWall,
+    roof_salv_wall_strong = VUL_SalvagedRoof_StrongWall,
+    roof_salv_wall_light = VUL_SalvagedRoof_LightWall,
+    roof_salv_wall_salv = VUL_SalvagedRoof_SalvageWall,
+    vulnerable_groups = VUL_vulnerable_groups,
+    pantawid_benef = VUL_pantawid_pamilya_beneficiary
+  ) %>%
+    filter(typhoon == tc_name) %>%
+    select(-Mun_Code, -Municipality,- Mun_Code_2, -typhoon,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct, -housing_units, 
+         -pantawid_benef, -Population.2020.Census., -Income.Class, -Unnamed..0,
+         - Correspondence.Code, -X10.Digit.Code) %>%
+    mutate(DAM_perc_dmg = coalesce(DAM_perc_dmg, 0)) 
+  
+  # making sure no more NA's across columns
+   filtered_data <- filtered_data[complete.cases(filtered_data), ]
+  
+  return(filtered_data)
+}
+
+```
+
+# The data
+
+## cleanded data
+```{r}
+path_2_df <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/mun_data.RData"
+
+load(file = path_2_df)
+
+head(df)
+```
+
+## base data
+```{r}
+path_2_base_df <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/base_inc_data.csv"
+
+base_df <- read.csv(file = path_2_base_df, header = TRUE)
+
+head(base_df)
+```
+
+
+## Correct column name
+```{r}
+# correct column name yellow_ss_frac2 to yellow_ls_frac
+# GEN_Yellow_per_LSbl
+clnd_municipality_tc_df <- clnd_municipality_tc_df %>%
+  rename(yellow_ls_frac = yellow_ss_frac2)
+```
+
+
+## Any rows with NA's
+Gives us an idea of columns to exclude early on
+```{r}
+rows_with_na <- clnd_municipality_tc_df %>%
+  filter(if_any(everything(), is.na)) # Check any column for NA
+
+print(rows_with_na)
+```
+
+```{r}
+# Remove "name" and "age" columns
+df_cleaned_stg1 <- clnd_municipality_tc_df %>% select(-housing_units, -pantawid_benef, 
+                            -Population.2020.Census., -Mun_Code_2, -Key)
+
+head(df_cleaned_stg1)
+```
+
+```{r}
+# Get column names with NA values
+columns_with_na <- df_cleaned_stg1 %>%
+  summarise(across(everything(), ~ any(is.na(.)))) %>%
+  select(where(~ .)) %>%
+  colnames()
+
+print(columns_with_na)
+```
+
+
+```{r}
+nrow(df_cleaned_stg1)
+```
+
+
+```{r}
+# remove the NA's
+df_cleaned_stg1 <- df_cleaned_stg1 %>% 
+  drop_na()
+
+nrow(df_cleaned_stg1)
+```
+
+## Column datatypes
+```{r}
+# Get column data types using base R
+column_types <- sapply(df_cleaned_stg1, class)
+
+print(column_types)
+```
+
+Change variables "has_coast", "Income.Class", Mun_Code_3 to factor
+```{r}
+# Convert specific variables to factors
+df_cleaned_stg1 <- df_cleaned_stg1 %>%
+  mutate(
+    has_coast = factor(has_coast),
+    Income.Class = factor(Income.Class),
+    Mun_Code_3 = factor(Mun_Code_3)
+  )
+
+# Check the result
+str(df_cleaned_stg1)
+```
+
+
+# Bayesian Network Modeling
+
+## Test and Train set
+```{r}
+# split into train, test set
+# n as number of observations
+n <- nrow(df_cleaned_stg1)
+
+# for reproducibility
+set.seed(12345)
+
+# use 60, 40 split
+id <- sample(1:n, floor(n*0.6))
+df_train <- df_cleaned_stg1[id, ]
+df_test <- df_cleaned_stg1[-id, ]
+
+# regression train test
+df_train_reg <- df_train %>%
+  filter(DAM_perc_dmg > 10)
+
+df_test_reg <- df_test %>%
+  filter(DAM_perc_dmg > 10)
+
+# SHOULD NOT RUN classification train test
+if (FALSE) {
+  df_train_class <- df_train  %>%
+  mutate(
+    DAM_perc_dmg = factor(
+      if_else(DAM_perc_dmg < 10, 0, 1),
+      levels = c(0, 1)
+    )
+  )
+
+df_test_class <- df_test  %>%
+  mutate(
+    DAM_perc_dmg = factor(
+      if_else(DAM_perc_dmg < 10, 0, 1),
+      levels = c(0, 1)
+    )
+  )
+}
+
+```
+
+```{r}
+nrow(df_train)
+```
+
+```{r}
+nrow(df_test)
+```
+
+### Removing extra columns
+We do not need the municipality names codes and regions for now. We can merge
+later.
+
+Also removing rain_max6h and rain_ma24h which are highly correlated with rain_total
+```{r}
+bn_train <- df_train %>%
+  select(-Mun_Code, -Municipality,- Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+
+bn_test <- df_test %>%
+  select(-Mun_Code, -Municipality, -Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+```
+
+
+## Filters
+TO CHECK: DOES THE RISK ZONES IN MUNICIPALITIES CHANGE WITH EVERY EVENT?
+
+```{r}
+# PH175101000
+PH175101000 <- df_cleaned_stg1 %>%
+  filter(Mun_Code == "PH175101000") %>%
+  select(Mun_Code, blue_ls_frac, blue_ss_frac)
+
+PH175101000  
+```
+
+
+## The DAG
+```{r}
+# start with an empty graph
+col_names <- colnames(bn_train)
+graph_1 <- empty.graph(col_names)
+```
+
+```{r}
+# setting arcs to the nodes
+model_1_arcs <-  matrix(c("track_min_dist", "wind_max", # closeness to tropical cyclone
+              "track_min_dist", "rain_total",
+              "wind_max","DAM_perc_dmg", # direct effect of wind on damage
+              "rain_total", "DAM_perc_dmg",
+              "ls_risk_pct","DAM_perc_dmg",# number of houses in landslide risk zones
+              "ss_risk_pct","DAM_perc_dmg", # number of houses in storm surge risk zones
+              "roof_strong_wall_strong", "DAM_perc_dmg",
+              "roof_strong_wall_light", "DAM_perc_dmg",
+              "roof_strong_wall_salv","DAM_perc_dmg",
+              "roof_light_wall_strong","DAM_perc_dmg",
+              "roof_light_wall_light","DAM_perc_dmg",
+              "roof_light_wall_salv","DAM_perc_dmg",
+              "roof_salv_wall_strong","DAM_perc_dmg",
+              "roof_salv_wall_light","DAM_perc_dmg",
+              "roof_salv_wall_salv","DAM_perc_dmg",
+              "has_coast", "coast_length",
+              "coast_length","blue_ss_frac",
+              "coast_length","yellow_ss_frac",
+              "coast_length", "orange_ss_frac",
+              "coast_length", "red_ss_frac",
+              "wind_max", "blue_ss_frac",
+              "wind_max", "yellow_ss_frac",
+              "wind_max", "orange_ss_frac",
+              "wind_max", "red_ss_frac",
+              "blue_ss_frac", "DAM_perc_dmg",
+              "yellow_ss_frac", "DAM_perc_dmg",
+              "orange_ss_frac", "DAM_perc_dmg",
+              "red_ss_frac", "DAM_perc_dmg",
+              "rain_total", "blue_ls_frac",
+              "rain_total", "yellow_ls_frac",
+              "rain_total", "orange_ls_frac",
+              "rain_total", "red_ls_frac",
+              "elev_mean", "blue_ls_frac",
+              "elev_mean", "yellow_ls_frac",
+              "elev_mean", "orange_ls_frac",
+              "elev_mean", "red_ls_frac",
+              "ruggedness_mean", "blue_ls_frac",
+              "ruggedness_mean", "yellow_ls_frac",
+              "ruggedness_mean", "orange_ls_frac",
+              "ruggedness_mean", "red_ls_frac",
+              "slope_mean", "blue_ls_frac",
+              "slope_mean", "yellow_ls_frac",
+              "slope_mean", "orange_ls_frac",
+              "slope_mean", "red_ls_frac"), 
+            ncol = 2, byrow = TRUE, 
+            dimnames = list(NULL, c("from", "to"))
+            )
+```
+
+```{r}
+arcs(graph_1) <- model_1_arcs
+
+```
+
+
+### Plotting model
+```{r}
+#library(Rgraphviz)
+
+#graphviz.plot(graph_1, shape = "circle", layout = "fdp")
+```
+
+
+
+## Model Fitting and Testing
+```{r}
+# train model
+fit_model_1 <- bn.fit(graph_1, data = bn_train)
+
+# test model on test set
+preds_model_1 <- predict(fit_model_1, node = "DAM_perc_dmg", data = bn_test)
+
+# evaluation metrics
+MSE_model_1 <- (sum((bn_test$DAM_perc_dmg - preds_model_1)^2)/length(preds_model_1))
+
+MSE_model_1
+```
+
+```{r}
+# RMSE
+sqrt(MSE_model_1)
+```
+
+
+### Handling negative values
+```{r}
+preds_model_1_nn <- pmax(preds_model_1, 0)
+# evaluation metrics
+MSE_model_1_nn <- (sum((bn_test$DAM_perc_dmg - preds_model_1_nn)^2)/length(preds_model_1_nn))
+
+MSE_model_1_nn
+```
+
+```{r}
+sqrt(MSE_model_1_nn)
+```
+
+
+### Prediction Typhoon Melor 2015
+```{r}
+# filter data by typhoon Melor 2015 only
+#melor_2015 <- df_cleaned_stg1 %>%
+#  filter(typhoon == "melor2015") %>%
+#  select(-Mun_Code, -Municipality,- Mun_Code_3, -typhoon, -region, -island_groups,
+#         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+
+melor_2015 <- filter_by_tc(tc_name = "melor2015")
+
+head(melor_2015)
+```
+
+
+```{r}
+# test model on test set
+preds_model_melor_2015 <- predict(fit_model_1, node = "DAM_perc_dmg", data = melor_2015)
+
+# evaluation metrics
+MSE_model_melor_2015 <- (sum((melor_2015$DAM_perc_dmg - preds_model_melor_2015)^2)/length(preds_model_melor_2015))
+
+MSE_model_melor_2015
+```
+
+
+```{r}
+preds_model_melor_2015_nn <- pmax(preds_model_melor_2015, 0)
+```
+
+```{r}
+melor_2015_nm <- base_df %>%
+  filter(typhoon == "melor2015") %>%
+  select(Mun_Code, Municipality) 
+  
+  
+melor_2015_nm <- melor_2015_nm %>%
+  mutate(pred_damage = preds_model_melor_2015_nn)
+
+# add missing municipalities and set their damage levels to zero
+head(melor_2015_nm)
+```
+
+```{r}
+write.csv(melor_2015_nm, "/Users/masinde/Projects/causal-fairness-Philippines-drrm/output/melor_2015_2.csv")
+```
+
+
+### Visualizing
+```{r}
+path_2_shp <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/phl_adminboundaries_candidate_adm3/phl_admbnda_adm3_psa_namria_20200529.shp"
+
+shapefile_data <- st_read(path_2_shp)
+
+plot(shapefile_data)
+```
+
+
+
+## Counterfactuals.
+One way is picking a typhoon event that occured in the north and getting the average
+of the characteristics or the extreme measurements and apply them for both north
+and south.
+
+We want to separate the counterfactuals for coastal areas and inland areas.
+
+### The case of Typhoon Melor 2015
+```{r}
+# using typhoon Melor 2015 characteristics
+melor_2015 <- df_cleaned_stg1 %>%
+  filter(typhoon == "melor2015") %>%
+  select(rain_total, wind_max) %>%
+  summarise(
+    max_rain_total = max(rain_total, na.rm = TRUE),
+    max_wind_max = max(wind_max, na.rm = TRUE)
+  )
+  
+melor_2015  
+```
+
+
+
+```{r}
+
+# Set evidence for fixed variables
+evidence_fixed <- list(rain_total = 651, wind_max = 67, track_min_dist = 53)
+
+samples_coastal <- cpdist(fitted = fit_model_1, 
+                          nodes = "DAM_perc_dmg", 
+                          evidence = c(evidence_fixed, list(has_coast = "1")), 
+                          method = "lw",
+                          n = 1000)
+
+# Sampling for non-coastal municipalities
+samples_non_coastal <- cpdist(fitted = fit_model_1, 
+                              nodes = "DAM_perc_dmg", 
+                              evidence = c(evidence_fixed, list(has_coast = "0")), 
+                              method = "lw",
+                              n = 1000)
+
+# Compute mean damage from the samples
+expected_coastal <- mean(pmax(samples_coastal$DAM_perc_dmg, 0))
+expected_non_coastal <- mean(pmax(samples_non_coastal$DAM_perc_dmg, 0))
+
+# Compare predictions
+cat("Expected Damage for Coastal Municipalities: ", expected_coastal, "\n")
+cat("Expected Damage for Non-Coastal Municipalities: ", expected_non_coastal, "\n")
+```
+
+## handling negative predictions
+
+```{r}
+samples_coastal_nn <- pmax(samples_coastal$DAM_perc_dmg, 0)
+```
+
+
+```{r}
+samples_non_coastal_nn <- pmax(samples_non_coastal$DAM_perc_dmg, 0)
+```
+
+
+### Add a node of the regions. 
+
+## Two Stage Modelling
+
+### Does the prediction go above 10%?
+```{r}
+# base training
+bn_base_train <- df_train %>%
+  select(-Mun_Code, -Municipality,- Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+
+fit_base_reg <- bn.fit(graph_1, data = bn_base_train)
+
+```
+
+
+```{r}
+# base testing
+bn_base_test <- df_test %>%
+  select(-Mun_Code, -Municipality, -Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+
+# test model on test set
+preds_base_reg <- predict(fit_base_reg, node = "DAM_perc_dmg", data = bn_base_test)
+```
+
+```{r}
+# evaluation metrics
+MSE_base_reg <- (sum((bn_base_test$DAM_perc_dmg - 
+                        pmax(preds_base_reg, 0))^2)/length(preds_base_reg))
+
+cat("RMSE of regression base model: ", sqrt(MSE_base_reg))
+```
+
+
+### Regression models for high impact areas
+```{r}
+# high impact regression training
+bn_train_high_reg <- df_train_reg %>%
+  select(-Mun_Code, -Municipality,- Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+
+fit_high_reg <- bn.fit(graph_1, data = bn_train_reg)
+```
+
+```{r}
+# high impact regression testing
+bn_test_high_reg <- df_test_reg %>%
+  select(-Mun_Code, -Municipality, -Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+
+# test model on test set
+preds_high_reg <- predict(fit_high_reg, node = "DAM_perc_dmg", data = bn_test_high_reg)
+```
+
+
+```{r}
+# evaluation metrics
+MSE_high_reg <- (sum((bn_test_high_reg$DAM_perc_dmg - 
+                        pmax(preds_high_reg, 0))^2)/length(preds_high_reg))
+
+cat("RMSE of regression for high impact above 10%: ", sqrt(MSE_high_reg))
+```
+
+## Two stage modelling function and prediction on Typhoon cases
+
+### Typhoon Melor 2015
+
+```{r}
+melor_2015 <- filter_by_tc(tc_name = "melor2015")
+```
+
+
+```{r}
+# two stage prediction function
+## we need to have all mucipalities, mun_code, municipality
+
+municipalities <- unique(base_df$Mun_Code)
+
+two_stage_pred <- function(typhoon_name) {
+  
+  #typhoon_name <- "melor2015"
+  # filter base_df by typhoon name 
+  data <-  filter_by_tc(tc_name = typhoon_name) # function only returns complete observations
+  
+  # first regression prediction
+  reg1 <- predict(fit_base_reg, node = "DAM_perc_dmg", data = data)
+  
+  # get predictions greater than 10
+  id_10 <- which(reg1 >= 10 ) 
+  
+  # second regression prediction
+  reg2 <-  predict(fit_high_reg, node = "DAM_perc_dmg", data = data[id_10, ]) 
+  
+  # change values in reg1 to those of reg2 at indexes id_10
+  reg1[id_10] <- reg2
+  
+  predictions <- pmax(reg1, 0)
+  
+  output <- base_df %>%
+    filter(typhoon == typhoon_name) %>%
+    select(Mun_Code) %>%
+    mutate(preds = predictions)
+  
+  # Find missing municipalities
+  missing_municipalities <- setdiff(municipalities, data2$Mun_Code)
+  
+  missing_data <- data.frame(Mun_Code = missing_municipalities, preds = 0)
+  
+  output <- bind_rows(output, missing_data)
+  
+}
+```
+
+
+```{r}
+# Again case of typhoon Melor
+prediction_melor_2015 <- two_stage_pred("melor2015")
+```
+
+```{r}
+head(prediction_melor_2015)
+```
+
+
+```{r}
+write.csv(prediction_melor_2015, "/Users/masinde/Projects/causal-fairness-Philippines-drrm/output/melor_2015_full.csv")
+```
+
+## Typhoon Track
+```{r}
+# Read the ibtracs CSV file
+data <- read.csv("/Users/masinde/Downloads/ibtracs.WP.list.v04r01.csv")
+
+# Filter rows where 'column_name' equals a certain value
+filtered_data <- data[data$SID == "2015344N07145", ]
+
+# Select specific columns by their names or indices
+result <- filtered_data[, c("SID", "SEASON", "LAT", "LON")]
+```
+
+```{r}
+write.csv2(result, "/Users/masinde/Projects/causal-fairness-Philippines-drrm/output/melor_2015_track.csv", row.names = FALSE)
+```
+
