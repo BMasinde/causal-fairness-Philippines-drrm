@@ -1,0 +1,183 @@
+---
+title: "Bayesian Network Model & Counterfactuals with binned data"
+output: html_notebook
+---
+
+```{r}
+# libraries
+library(bnlearn) # bayesian networks library
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+
+# The Data
+```{r}
+path_2_df <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/mun_data.RData"
+
+load(file = path_2_df)
+
+head(df)
+```
+
+## Correct column name
+```{r}
+# correct column name yellow_ss_frac2 to yellow_ls_frac
+# GEN_Yellow_per_LSbl
+clnd_municipality_tc_df <- clnd_municipality_tc_df %>%
+  rename(yellow_ls_frac = yellow_ss_frac2)
+```
+
+
+## Removing not needed columns
+```{r}
+# Remove "name" and "age" columns
+df <- clnd_municipality_tc_df %>% select(-housing_units, -pantawid_benef, 
+                            -Population.2020.Census., -Mun_Code_2, -Key)
+
+head(df)
+```
+## Removing NA's
+```{r}
+# remove the NA's
+df <- df %>% 
+  drop_na()
+
+nrow(df)
+```
+
+
+## Column datatypes
+```{r}
+# Get column data types using base R
+column_types <- sapply(df, class)
+
+print(column_types)
+```
+
+
+Change variables "has_coast", "Income.Class", Mun_Code_3 to factor
+```{r}
+# Convert specific variables to factors
+df <- df %>%
+  mutate(
+    has_coast = factor(has_coast),
+    Income.Class = factor(Income.Class),
+    Mun_Code_3 = factor(Mun_Code_3)
+  )
+
+# Check the result
+str(df)
+```
+
+
+# Bayesian Network Modeling
+
+## Test and Train set
+```{r}
+# split into train, test set
+# n as number of observations
+n <- nrow(df)
+
+# for reproducibility
+set.seed(12345)
+
+# use 40, 30, 30  split
+id <- sample(1:n, floor(n*0.6))
+df_train <- df[id, ]
+df_test <- df[-id, ]
+```
+
+
+```{r}
+nrow(df_train)
+```
+
+```{r}
+nrow(df_test)
+```
+
+
+### Removing extra columns
+We do not need the municipality names codes and regions for now. We can merge
+later.
+
+Also removing rain_max6h and rain_ma24h which are highly correlated with rain_total
+```{r}
+bn_train <- df_train %>%
+  select(-Mun_Code, -Municipality,- Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+
+bn_test <- df_test %>%
+  select(-Mun_Code, -Municipality, -Mun_Code_3, -typhoon, -region, -island_groups,
+         -vulnerable_groups, -rain_max6h, -rain_max24h, -poverty_pct)
+```
+
+
+## The DAG
+```{r}
+# start with an empty graph
+col_names <- colnames(bn_train)
+graph_1 <- empty.graph(col_names)
+```
+
+```{r}
+# setting arcs to the nodes
+model_1_arcs <-  matrix(c( # closeness to tropical cyclone
+              "track_min_dist", "DAM_perc_dmg",
+              "wind_max","DAM_perc_dmg", # direct effect of wind on damage
+              "rain_total", "DAM_perc_dmg",
+              "ls_risk_pct","DAM_perc_dmg",# number of houses in landslide risk zones
+              "ss_risk_pct","DAM_perc_dmg", # number of houses in storm surge risk zones
+              "roof_strong_wall_strong", "DAM_perc_dmg",
+              "roof_strong_wall_light", "DAM_perc_dmg",
+              "roof_strong_wall_salv","DAM_perc_dmg",
+              "roof_light_wall_strong","DAM_perc_dmg",
+              "roof_light_wall_light","DAM_perc_dmg",
+              "roof_light_wall_salv","DAM_perc_dmg",
+              "roof_salv_wall_strong","DAM_perc_dmg",
+              "roof_salv_wall_light","DAM_perc_dmg",
+              "roof_salv_wall_salv","DAM_perc_dmg",
+              "has_coast", "coast_length",
+              "coast_length","blue_ss_frac",
+              "coast_length","yellow_ss_frac",
+              "coast_length", "orange_ss_frac",
+              "coast_length", "red_ss_frac",
+              "blue_ss_frac", "DAM_perc_dmg",
+              "yellow_ss_frac", "DAM_perc_dmg",
+              "orange_ss_frac", "DAM_perc_dmg",
+              "red_ss_frac", "DAM_perc_dmg",
+              "elev_mean", "DAM_perc_dmg",
+              "ruggedness_mean", "DAM_perc_dmg",
+              "slope_mean", "DAM_perc_dmg"), 
+            ncol = 2, byrow = TRUE, 
+            dimnames = list(NULL, c("from", "to"))
+            )
+```
+
+```{r}
+arcs(graph_1) <- model_1_arcs
+
+```
+
+
+## Model Fitting and Testing
+```{r}
+# train model
+fit_model_1 <- bn.fit(graph_1, data = bn_train)
+
+# test model on test set
+preds_model_1 <- predict(fit_model_1, node = "DAM_perc_dmg", data = bn_test)
+
+# evaluation metrics
+MSE_model_1 <- (sum((bn_test$DAM_perc_dmg - preds_model_1)^2)/length(preds_model_1))
+
+MSE_model_1
+```
+
+```{r}
+# RMSE
+sqrt(MSE_model_1)
+```
+
