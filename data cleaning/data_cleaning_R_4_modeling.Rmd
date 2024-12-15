@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "Data Cleaning: DWSD Philippines dataset (Municipality)"
 output: html_notebook
 ---
 
@@ -9,6 +9,7 @@ output: html_notebook
 ```{r message=FALSE, warning=FALSE, paged.print=FALSE}
 library(dplyr)
 library(readxl)
+library(janitor)
 ```
 
 ## Importing Data
@@ -78,24 +79,30 @@ municipality_tc_df <- base_df %>%
 head(municipality_tc_df)
 ```
 
-## Adding more variables
 
-## Removing NA's
-We care about NA's in the outcome variable. So we remove rows with NA's in the 
-outcome varaible first.
+## Handling missing values in outcome:
+Missing or NA values means that no damage was observed. It is important to include
+these samples. So where there's missing observations in the outcome we should
+set it to zero.
 ```{r}
-# removing NA's rows in DAM_perc_dmg
+# replacing NA values with 0 where rain_total < 50 and wind_max < 25
 municipality_tc_df <- municipality_tc_df  %>% 
-  filter(!is.na(DAM_perc_dmg))
+  mutate(DAM_perc_dmg = if_else(is.na(DAM_perc_dmg) & wind_max < 25 & rain_total < 50, 0, DAM_perc_dmg))
 ```
 
 
 ```{r}
-nrow(municipality_tc_df)
+cat("number of observations before BEFORE remaining NA: ", nrow(base_df))
 ```
 
 ```{r}
-head(municipality_tc_df)
+# removing NA's
+municipality_tc_df <- municipality_tc_df  %>%
+  filter(!is.na((DAM_perc_dmg)))
+```
+
+```{r}
+cat("number of observations AFTER removing remaining NA: ", nrow(municipality_tc_df))
 ```
 
 ### Missing municipality names
@@ -242,36 +249,65 @@ any(is.na(clnd_municipality_tc_df$region))
 ```
 
 
+# Add missing income classes
 ```{r}
-# add island groups
-# merge regions_df with cln_municipality_tc_df
+# get mun_code3 of municipality  which income classes are missing
 
-clnd_municipality_tc_df <- clnd_municipality_tc_df %>%
-  # Extract the first two characters of D
-  #mutate(Key = substr(Mun_Code_3, 1, 2)) %>%
-  # Perform a left join with B
-  left_join(
-    regions_df %>%
-      mutate(Key = substr(region_code, 1, 2)) %>% 
-      select(Key, region), # Keep only the relevant columns from B
-    by = "Key"
-  ) #%>%
-  # Rename F to E (if desired)
-  # rename(E = F) %>%
-  # Drop the intermediate Key column
-  #select(-Key)
+# checking which correspondence code are missing
+missing_mun_inc <- clnd_municipality_tc_df %>% 
+  filter(Income.Class == "") %>%
+  select(Municipality, Mun_Code_3)
 
-head(clnd_municipality_tc_df)
+nrow(missing_mun_inc)
+
+```
+
+```{r}
+# clean colnames in psgc_2q_2024 file
+psgc_2q_2024 <- psgc_2q_2024 %>% 
+  clean_names()
 ```
 
 
 ```{r}
-# Add the three regions
+add_inc_class <- psgc_2q_2024 %>% 
+  filter(correspondence_code %in% missing_mun_inc$Mun_Code_3) %>% # match character
+  select(correspondence_code, income_classification)
+
+add_inc_class
 ```
+
+
+```{r, add_missing_inc}
+# add missing income classes
+
+clnd_municipality_tc_df <- clnd_municipality_tc_df %>% 
+  mutate(Income.Class = case_when(
+    Mun_Code_3 %in% missing_mun_inc$Mun_Code_3 ~ 
+         add_inc_class$income_classification[match(Mun_Code_3, add_inc_class$correspondence_code)],
+    TRUE ~ Income.Class
+  ))
+```
+
+
+Formatting the column income class only keeping the first three characters. This 
+should elliminate observations with * and other annotations
+```{r}
+clnd_municipality_tc_df <-  clnd_municipality_tc_df %>% 
+  mutate(Income.Class = substr(Income.Class, 1, 3))
+```
+
 
 
 # Export data
 ```{r}
+path_2_write <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/"
+
+save(clnd_municipality_tc_df, file = paste0(path_2_write, "mun_data.RData"))
+```
+
+Saving as csv file messes up with mun_code
+```{r write_csv, eval=FALSE}
 # path to write cleaned data 
 path_2_write <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data"
 write.csv(clnd_municipality_tc_df, file = paste(path_2_write, "mun_model_data.csv", sep = "/"))
