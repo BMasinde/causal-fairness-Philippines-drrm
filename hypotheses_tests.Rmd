@@ -1,0 +1,173 @@
+---
+title: "Hypothesis Testing: DWSD Philippines dataset"
+output: html_notebook
+---
+
+# Hypothesis Testing
+Null hypothesis, there is no difference in vulnerability (averages) between
+municipalities in the Luzon, Visayas and Mindanao regions.
+
+```{r}
+# libraries we need?
+# maybe we need dplyr
+library(dplyr)
+```
+
+## Dataset
+```{r}
+# reading the cleaned dataset
+path_2_df <- "/Users/masinde/Projects/causal-fairness-Philippines-drrm/data/mun_model_data.csv"
+
+df <- read.csv(file = path_2_df, header = T)
+
+head(df)
+```
+
+## ANOVA tests (Physicall vulnerability variables)
+```{r}
+variables <- c("roof_strong_wall_strong", "roof_strong_wall_light", 
+  "roof_strong_wall_salv", "roof_light_wall_strong", "roof_light_wall_light",
+  "roof_light_wall_salv", "roof_salv_wall_strong", "roof_salv_wall_light",
+  "roof_salv_wall_salv")
+
+region_col <- "island_groups"
+
+# we need the regions column to be factors
+df[[region_col]] <- as.factor(df[[region_col]])
+
+# Ensure the region_col has three regions
+regions <- unique(df[[region_col]])
+if (length(regions) != 3) {
+  stop("The region_col must have exactly three regions.")
+}
+
+# Initialize a list to store results
+results <- list()
+
+# Perform ANOVA for each variable
+for (var in variables) {
+  formula <- as.formula(paste(var, "~", region_col))
+  anova_result <- aov(formula, data = df)
+  summary_result <- summary(anova_result)
+  
+  # Safely extract the p-value and F-statistic
+  f_stat <- summary_result[[1]][["F value"]][1]
+  p_value <- summary_result[[1]][["Pr(>F)"]][1]
+  
+  # Save the results
+  results[[var]] <- list(
+    "F-statistic" = f_stat,
+    "p-value" = p_value,
+    "anova_object" = anova_result  # Store the full ANOVA object for post-hoc
+  )
+}
+
+# Convert results to a data frame
+results_df <- do.call(rbind, lapply(results, function(x) data.frame(F_statistic = x[["F-statistic"]], p_value = x[["p-value"]])))
+rownames(results_df) <- variables
+print("ANOVA Results:")
+print(results_df)
+
+# Perform post-hoc Tukey's HSD if significant
+for (var in variables) {
+  if (!is.null(results[[var]]$p_value) && results[[var]]$p_value < 0.05) {
+    print(paste("Post-hoc test for", var))
+    tukey <- TukeyHSD(results[[var]]$anova_object)
+    print(tukey)
+  }
+}
+```
+
+
+```{r}
+# Perform post-hoc Tukey's HSD if significant
+for (var in variables) {
+  if (!is.null(results[[var]]$`p-value`) && results[[var]]$`p-value` < 0.05) {
+    print(paste("Performing post-hoc Tukey's HSD for", var))
+    
+    # Run Tukey's HSD test
+    tukey <- TukeyHSD(results[[var]]$anova_object)
+    
+    # Check if Tukey's results are empty
+    if (!is.null(tukey)) {
+      print(tukey)
+    } else {
+      print(paste("No significant pairwise differences found for", var))
+    }
+  } else {
+    print(paste("ANOVA not significant for", var, "- skipping Tukey's HSD"))
+  }
+}
+```
+
+## ANOVA test on hazards
+```{r}
+head(df)
+```
+
+
+```{r}
+variables <- c("rain_total","rain_max6h","rain_max24h", "wind_max", "track_min_dist")
+
+region_col <- "island_groups"
+
+# we need the regions column to be factors
+df[[region_col]] <- as.factor(df[[region_col]])
+
+# Ensure the region_col has three regions
+regions <- unique(df[[region_col]])
+if (length(regions) != 3) {
+  stop("The region_col must have exactly three regions.")
+}
+
+# Initialize a list to store results
+results_hazards <- list()
+
+# Perform ANOVA for each variable
+for (var in variables) {
+  formula <- as.formula(paste(var, "~", region_col))
+  anova_result <- aov(formula, data = df)
+  summary_result <- summary(anova_result)
+  
+  # Safely extract the p-value and F-statistic
+  f_stat <- summary_result[[1]][["F value"]][1]
+  p_value <- summary_result[[1]][["Pr(>F)"]][1]
+  
+  # Save the results
+  results_hazards[[var]] <- list(
+    "F-statistic" = f_stat,
+    "p-value" = p_value,
+    "anova_object" = anova_result  # Store the full ANOVA object for post-hoc
+  )
+}
+
+# Convert results to a data frame
+results_hazards_df <- do.call(rbind, lapply(results_hazards, function(x) data.frame(F_statistic = x[["F-statistic"]], p_value = x[["p-value"]])))
+rownames(results_hazards_df) <- variables
+print("ANOVA Results:")
+print(results_hazards_df)
+
+```
+
+
+```{r}
+# Perform post-hoc Tukey's HSD if significant
+for (var in variables) {
+  if (!is.null(results_hazards[[var]]$`p-value`) && results_hazards[[var]]$`p-value` < 0.05) {
+    print(paste("Performing post-hoc Tukey's HSD for", var))
+    
+    # Run Tukey's HSD test
+    tukey <- TukeyHSD(results_hazards[[var]]$anova_object)
+    
+    # Check if Tukey's results are empty
+    if (!is.null(tukey)) {
+      print(tukey)
+    } else {
+      print(paste("No significant pairwise differences found for", var))
+    }
+  } else {
+    print(paste("ANOVA not significant for", var, "- skipping Tukey's HSD"))
+  }
+}
+```
+
